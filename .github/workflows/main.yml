@@ -5,12 +5,12 @@ on:
     - cron: '0 */5 * * *'
   workflow_dispatch:
 
-# Prevent overlapping runs so you never get double messages
+# Prevent overlapping workflow runs
 concurrency:
   group: meow-mafia-runner
   cancel-in-progress: true
 
-# Restrict repository permissions for maximum security in public repos
+# Restrict repository permissions for public safety
 permissions: {}
 
 jobs:
@@ -26,17 +26,15 @@ jobs:
       - name: Install Telethon
         run: pip install --quiet telethon
 
-      - name: Run Resilient Meow & Fish Loop
+      - name: Run Smart Meow, Fishing & Claim Bot
         env:
           API_ID: ${{ secrets.API_ID }}
           API_HASH: ${{ secrets.API_HASH }}
           SESSION_STRING: ${{ secrets.SESSION_STRING }}
           GROUP_ID: ${{ secrets.GROUP_ID }}
-          MEOW_TEXT: "میو"
-          FISH_TEXT: "ماهی"
         run: |
           python -u -c '
-          import os, asyncio, time
+          import os, asyncio, time, re
           from telethon import TelegramClient
           from telethon.sessions import StringSession
           from telethon.errors import FloodWaitError
@@ -45,11 +43,76 @@ jobs:
           api_hash = os.environ["API_HASH"]
           session = os.environ["SESSION_STRING"].strip()
           group_id = int(os.environ["GROUP_ID"])
-          meow_text = os.environ["MEOW_TEXT"]
-          fish_text = os.environ["FISH_TEXT"]
+
+          async def find_bot_reply(client, sent_msg_id, wait_seconds=6):
+              await asyncio.sleep(wait_seconds)
+              async for msg in client.iter_messages(group_id, limit=15):
+                  if msg.reply_to_msg_id == sent_msg_id:
+                      return msg
+              return None
+
+          async def smart_fishing_and_claim(client, cycle):
+              # Step 1: Send "پیشی" to check stomach status (and claim points on cycle 0)
+              pishi_msg = await client.send_message(group_id, "پیشی")
+              print(f"[Cycle {cycle+1}/60] Sent پیشی to check status...")
+              
+              reply = await find_bot_reply(client, pishi_msg.id, wait_seconds=5)
+              should_sell = False
+              
+              if reply:
+                  # Parse stomach pattern like (9 / 10)
+                  if reply.text:
+                      match = re.search(r"\((\d+)\s*/\s*(\d+)\)", reply.text)
+                      if match:
+                          current_food = int(match.group(1))
+                          max_cap = int(match.group(2))
+                          # Overfeed limit set to +2: sell if current_food >= (max_cap + 2)
+                          if current_food >= (max_cap + 2):
+                              should_sell = True
+                          print(f"[Cycle {cycle+1}/60] Stomach: {current_food}/{max_cap} (Threshold: {max_cap+2}) -> Action: {\"SELL\" if should_sell else \"EAT\"}")
+                      else:
+                          print(f"[Cycle {cycle+1}/60] Could not parse stomach numbers, defaulting to EAT.")
+
+                  # Claim Meow Points once per 5-hour workflow run (on cycle 0)
+                  if cycle == 0 and reply.buttons:
+                      claimed = False
+                      for row in reply.buttons:
+                          for button in row:
+                              if "برداشت میو پوینت" in button.text:
+                                  await button.click()
+                                  print(f"[Cycle {cycle+1}/60] Clicked button: {button.text} (Points Claimed!)")
+                                  claimed = True
+                                  break
+                          if claimed:
+                              break
+              else:
+                  print(f"[Cycle {cycle+1}/60] No reply to پیشی found, defaulting to EAT.")
+
+              await asyncio.sleep(3)
+
+              # Step 2: Send "ماهی" to catch fish
+              fish_msg = await client.send_message(group_id, "ماهی")
+              print(f"[Cycle {cycle+1}/60] Sent ماهی command...")
+              
+              fish_reply = await find_bot_reply(client, fish_msg.id, wait_seconds=6)
+              if fish_reply and fish_reply.buttons:
+                  target_keyword = "فروش ماهی" if should_sell else "بده پیشی بخوره"
+                  clicked = False
+                  for row in fish_reply.buttons:
+                      for button in row:
+                          if target_keyword in button.text:
+                              await button.click()
+                              print(f"[Cycle {cycle+1}/60] Clicked button: {button.text}")
+                              clicked = True
+                              break
+                      if clicked:
+                          break
+                  if not clicked:
+                      print(f"[Cycle {cycle+1}/60] Target fishing button not found!")
+              else:
+                  print(f"[Cycle {cycle+1}/60] No fishing buttons found (cooldown or missed).")
 
           async def execute_step(cycle):
-              # Reconnect fresh on every cycle to avoid idle socket disconnects
               client = TelegramClient(
                   StringSession(session),
                   api_id,
@@ -58,27 +121,26 @@ jobs:
                   retry_delay=3
               )
               async with client:
-                  await client.send_message(group_id, meow_text)
+                  # Send Meow every 5 minutes
+                  await client.send_message(group_id, "میو")
                   print(f"[Cycle {cycle+1}/60] Meow sent successfully!")
 
-                  # Every 6 cycles (6 * 5 mins = 30 mins), trigger fishing
+                  # Every 6 cycles (30 minutes), execute smart fishing (and claim points on cycle 0)
                   if cycle % 6 == 0:
-                      await asyncio.sleep(2)
-                      await client.send_message(group_id, fish_text)
-                      print(f"[Cycle {cycle+1}/60] Fishing command sent!")
+                      await asyncio.sleep(3)
+                      await smart_fishing_and_claim(client, cycle)
 
           async def main():
               for cycle in range(60):
                   start_time = time.time()
                   try:
-                      await asyncio.wait_for(execute_step(cycle), timeout=45)
+                      await asyncio.wait_for(execute_step(cycle), timeout=65)
                   except FloodWaitError as e:
                       print(f"Telegram FloodWait: sleeping for {e.seconds}s")
                       await asyncio.sleep(e.seconds)
                   except Exception as e:
-                      print(f"Error on cycle {cycle+1}: {type(e).name} - {e}")
+                      print(f"Error on cycle {cycle+1}: {type(e).__name__} - {e}")
 
-                  # Calculate exact remaining time to keep a strict 300-second interval
                   elapsed = time.time() - start_time
                   sleep_duration = max(0, 300 - elapsed)
                   if cycle < 59:
