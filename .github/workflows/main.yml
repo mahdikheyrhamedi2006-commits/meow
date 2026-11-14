@@ -1,0 +1,88 @@
+name: Meow Mafia Timer
+
+on:
+  schedule:
+    - cron: '0 */5 * * *'
+  workflow_dispatch:
+
+# Prevent overlapping runs so you never get double messages
+concurrency:
+  group: meow-mafia-runner
+  cancel-in-progress: true
+
+# Restrict repository permissions for maximum security in public repos
+permissions: {}
+
+jobs:
+  send-meow:
+    runs-on: ubuntu-latest
+    timeout-minutes: 310
+    steps:
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Telethon
+        run: pip install --quiet telethon
+
+      - name: Run Resilient Meow & Fish Loop
+        env:
+          API_ID: ${{ secrets.API_ID }}
+          API_HASH: ${{ secrets.API_HASH }}
+          SESSION_STRING: ${{ secrets.SESSION_STRING }}
+          GROUP_ID: ${{ secrets.GROUP_ID }}
+          MEOW_TEXT: "میو"
+          FISH_TEXT: "ماهی"
+        run: |
+          python -u -c '
+          import os, asyncio, time
+          from telethon import TelegramClient
+          from telethon.sessions import StringSession
+          from telethon.errors import FloodWaitError
+
+          api_id = int(os.environ["API_ID"])
+          api_hash = os.environ["API_HASH"]
+          session = os.environ["SESSION_STRING"].strip()
+          group_id = int(os.environ["GROUP_ID"])
+          meow_text = os.environ["MEOW_TEXT"]
+          fish_text = os.environ["FISH_TEXT"]
+
+          async def execute_step(cycle):
+              # Reconnect fresh on every cycle to avoid idle socket disconnects
+              client = TelegramClient(
+                  StringSession(session),
+                  api_id,
+                  api_hash,
+                  connection_retries=5,
+                  retry_delay=3
+              )
+              async with client:
+                  await client.send_message(group_id, meow_text)
+                  print(f"[Cycle {cycle+1}/60] Meow sent successfully!")
+
+                  # Every 6 cycles (6 * 5 mins = 30 mins), trigger fishing
+                  if cycle % 6 == 0:
+                      await asyncio.sleep(2)
+                      await client.send_message(group_id, fish_text)
+                      print(f"[Cycle {cycle+1}/60] Fishing command sent!")
+
+          async def main():
+              for cycle in range(60):
+                  start_time = time.time()
+                  try:
+                      await asyncio.wait_for(execute_step(cycle), timeout=45)
+                  except FloodWaitError as e:
+                      print(f"Telegram FloodWait: sleeping for {e.seconds}s")
+                      await asyncio.sleep(e.seconds)
+                  except Exception as e:
+                      print(f"Error on cycle {cycle+1}: {type(e).name} - {e}")
+
+                  # Calculate exact remaining time to keep a strict 300-second interval
+                  elapsed = time.time() - start_time
+                  sleep_duration = max(0, 300 - elapsed)
+                  if cycle < 59:
+                      await asyncio.sleep(sleep_duration)
+
+          asyncio.run(main())
+          '
