@@ -5,12 +5,10 @@ on:
     - cron: '0 */5 * * *'
   workflow_dispatch:
 
-# Prevent overlapping workflow runs
 concurrency:
   group: meow-mafia-runner
   cancel-in-progress: true
 
-# Restrict repository permissions for public safety
 permissions: {}
 
 jobs:
@@ -33,16 +31,22 @@ jobs:
           SESSION_STRING: ${{ secrets.SESSION_STRING }}
           GROUP_ID: ${{ secrets.GROUP_ID }}
         run: |
-          python -u -c '
+          cat << 'EOF' > bot.py
           import os, asyncio, time, re
           from telethon import TelegramClient
           from telethon.sessions import StringSession
           from telethon.errors import FloodWaitError
 
-          api_id = int(os.environ["API_ID"])
-          api_hash = os.environ["API_HASH"]
-          session = os.environ["SESSION_STRING"].strip()
-          group_id = int(os.environ["GROUP_ID"])
+          api_id_raw = os.environ.get("API_ID", "").strip()
+          api_hash = os.environ.get("API_HASH", "").strip()
+          session = os.environ.get("SESSION_STRING", "").strip()
+          group_id_raw = os.environ.get("GROUP_ID", "").strip()
+
+          if not all([api_id_raw, api_hash, session, group_id_raw]):
+              raise ValueError("ERROR: One or more GitHub Secrets (API_ID, API_HASH, SESSION_STRING, GROUP_ID) are missing in this repository!")
+
+          api_id = int(api_id_raw)
+          group_id = int(group_id_raw)
 
           async def find_bot_reply(client, sent_msg_id, wait_seconds=6):
               await asyncio.sleep(wait_seconds)
@@ -52,7 +56,6 @@ jobs:
               return None
 
           async def smart_fishing_and_claim(client, cycle):
-              # Step 1: Send "پیشی" to check stomach status (and claim points on cycle 0)
               pishi_msg = await client.send_message(group_id, "پیشی")
               print(f"[Cycle {cycle+1}/60] Sent پیشی to check status...")
               
@@ -60,20 +63,18 @@ jobs:
               should_sell = False
               
               if reply:
-                  # Parse stomach pattern like (9 / 10)
                   if reply.text:
                       match = re.search(r"\((\d+)\s*/\s*(\d+)\)", reply.text)
                       if match:
                           current_food = int(match.group(1))
                           max_cap = int(match.group(2))
-                          # Overfeed limit set to +2: sell if current_food >= (max_cap + 2)
                           if current_food >= (max_cap + 2):
                               should_sell = True
-                          print(f"[Cycle {cycle+1}/60] Stomach: {current_food}/{max_cap} (Threshold: {max_cap+2}) -> Action: {\"SELL\" if should_sell else \"EAT\"}")
+                          action_str = "SELL" if should_sell else "EAT"
+                          print(f"[Cycle {cycle+1}/60] Stomach: {current_food}/{max_cap} (Threshold: {max_cap+2}) -> Action: {action_str}")
                       else:
                           print(f"[Cycle {cycle+1}/60] Could not parse stomach numbers, defaulting to EAT.")
 
-                  # Claim Meow Points once per 5-hour workflow run (on cycle 0)
                   if cycle == 0 and reply.buttons:
                       claimed = False
                       for row in reply.buttons:
@@ -90,7 +91,6 @@ jobs:
 
               await asyncio.sleep(3)
 
-              # Step 2: Send "ماهی" to catch fish
               fish_msg = await client.send_message(group_id, "ماهی")
               print(f"[Cycle {cycle+1}/60] Sent ماهی command...")
               
@@ -121,11 +121,9 @@ jobs:
                   retry_delay=3
               )
               async with client:
-                  # Send Meow every 5 minutes
                   await client.send_message(group_id, "میو")
                   print(f"[Cycle {cycle+1}/60] Meow sent successfully!")
 
-                  # Every 6 cycles (30 minutes), execute smart fishing (and claim points on cycle 0)
                   if cycle % 6 == 0:
                       await asyncio.sleep(3)
                       await smart_fishing_and_claim(client, cycle)
@@ -147,4 +145,5 @@ jobs:
                       await asyncio.sleep(sleep_duration)
 
           asyncio.run(main())
-          '
+          EOF
+          python -u bot.py
