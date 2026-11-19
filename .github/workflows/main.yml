@@ -24,7 +24,7 @@ jobs:
       - name: Install Telethon
         run: pip install --quiet telethon
 
-      - name: Run Smart Meow, Fishing & Claim Bot
+      - name: Run Meow & Claim Bot
         env:
           API_ID: ${{ secrets.API_ID }}
           API_HASH: ${{ secrets.API_HASH }}
@@ -32,7 +32,7 @@ jobs:
           GROUP_ID: ${{ secrets.GROUP_ID }}
         run: |
           cat << 'EOF' > bot.py
-          import os, asyncio, time, re
+          import os, asyncio, time
           from telethon import TelegramClient
           from telethon.sessions import StringSession
           from telethon.errors import FloodWaitError
@@ -55,62 +55,26 @@ jobs:
                       return msg
               return None
 
-          async def smart_fishing_and_claim(client, cycle):
+          async def claim_meow_points(client, cycle):
               pishi_msg = await client.send_message(group_id, "پیشی")
-              print(f"[Cycle {cycle+1}/60] Sent پیشی to check status...")
-              
+              print(f"[Cycle {cycle+1}/60] Sent پیشی to claim points...")
+
               reply = await find_bot_reply(client, pishi_msg.id, wait_seconds=5)
-              should_sell = False
-              
-              if reply:
-                  if reply.text:
-                      match = re.search(r"\((\d+)\s*/\s*(\d+)\)", reply.text)
-                      if match:
-                          current_food = int(match.group(1))
-                          max_cap = int(match.group(2))
-                          if current_food >= (max_cap + 2):
-                              should_sell = True
-                          action_str = "SELL" if should_sell else "EAT"
-                          print(f"[Cycle {cycle+1}/60] Stomach: {current_food}/{max_cap} (Threshold: {max_cap+2}) -> Action: {action_str}")
-                      else:
-                          print(f"[Cycle {cycle+1}/60] Could not parse stomach numbers, defaulting to EAT.")
-
-                  if cycle == 0 and reply.buttons:
-                      claimed = False
-                      for row in reply.buttons:
-                          for button in row:
-                              if "برداشت میو پوینت" in button.text:
-                                  await button.click()
-                                  print(f"[Cycle {cycle+1}/60] Clicked button: {button.text} (Points Claimed!)")
-                                  claimed = True
-                                  break
-                          if claimed:
-                              break
-              else:
-                  print(f"[Cycle {cycle+1}/60] No reply to پیشی found, defaulting to EAT.")
-
-              await asyncio.sleep(3)
-
-              fish_msg = await client.send_message(group_id, "ماهی")
-              print(f"[Cycle {cycle+1}/60] Sent ماهی command...")
-              
-              fish_reply = await find_bot_reply(client, fish_msg.id, wait_seconds=6)
-              if fish_reply and fish_reply.buttons:
-                  target_keyword = "فروش ماهی" if should_sell else "بده پیشی بخوره"
-                  clicked = False
-                  for row in fish_reply.buttons:
+              if reply and reply.buttons:
+                  claimed = False
+                  for row in reply.buttons:
                       for button in row:
-                          if target_keyword in button.text:
+                          if "برداشت میو پوینت" in button.text:
                               await button.click()
-                              print(f"[Cycle {cycle+1}/60] Clicked button: {button.text}")
-                              clicked = True
+                              print(f"[Cycle {cycle+1}/60] Clicked button: {button.text} (Points Claimed!)")
+                              claimed = True
                               break
-                      if clicked:
+                      if claimed:
                           break
-                  if not clicked:
-                      print(f"[Cycle {cycle+1}/60] Target fishing button not found!")
+                  if not claimed:
+                      print(f"[Cycle {cycle+1}/60] Claim button not found.")
               else:
-                  print(f"[Cycle {cycle+1}/60] No fishing buttons found (cooldown or missed).")
+                  print(f"[Cycle {cycle+1}/60] No reply or buttons for پیشی found.")
 
           async def execute_step(cycle):
               client = TelegramClient(
@@ -121,12 +85,16 @@ jobs:
                   retry_delay=3
               )
               async with client:
-                  await client.send_message(group_id, "میو")
+                  try:
+                      await client.send_message(group_id, "میو")
+                  except ValueError:
+                      await client.get_dialogs()
+                      await client.send_message(group_id, "میو")
                   print(f"[Cycle {cycle+1}/60] Meow sent successfully!")
 
-                  if cycle % 6 == 0:
+                  if cycle == 0:
                       await asyncio.sleep(3)
-                      await smart_fishing_and_claim(client, cycle)
+                      await claim_meow_points(client, cycle)
 
           async def main():
               for cycle in range(60):
