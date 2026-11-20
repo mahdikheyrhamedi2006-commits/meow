@@ -7,14 +7,14 @@ on:
 
 concurrency:
   group: meow-mafia-runner
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 permissions: {}
 
 jobs:
   send-meow:
     runs-on: ubuntu-latest
-    timeout-minutes: 345
+    timeout-minutes: 178
     steps:
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -34,8 +34,11 @@ jobs:
           cat << 'EOF' > bot.py
           import os
           import sys
+          import time
           import random
+          import signal
           import asyncio
+          from datetime import datetime, timezone, timedelta
           from telethon import TelegramClient
           from telethon.sessions import StringSession
           from telethon.errors import FloodWaitError, UnauthorizedError, AuthKeyError
@@ -50,12 +53,35 @@ jobs:
 
           api_id = int(api_id_raw)
           group_id = int(group_id_raw)
-          TOTAL_CYCLES = 68  # ~5 hours 15 minutes
+
+          MAX_RUNTIME_SEC = 172 * 60  # 2h 52m (clean handover before next 3h cron)
+          INTERVAL_MIN = 272          # 4m 32s
+          INTERVAL_MAX = 275          # 4m 35s
+          IR_TZ = timezone(timedelta(hours=3, minutes=30))
+
+          def now_ir() -> str:
+              return datetime.now(IR_TZ).strftime("%H:%M:%S")
 
           class SessionExpiredError(Exception):
               pass
 
-          async def send_meow(cycle: int):
+          async def sleep_or_stop(stop_event: asyncio.Event, seconds: float):
+              if seconds <= 0:
+                  return
+              try:
+                  await asyncio.wait_for(stop_event.wait(), timeout=seconds)
+              except asyncio.TimeoutError:
+                  pass
+
+          async def main():
+              stop_event = asyncio.Event()
+              loop = asyncio.get_running_loop()
+              for sig in (signal.SIGTERM, signal.SIGINT):
+                  try:
+                      loop.add_signal_handler(sig, stop_event.set)
+                  except NotImplementedError:
+                      pass
+
               client = TelegramClient(
                   StringSession(session),
                   api_id,
@@ -63,37 +89,69 @@ jobs:
                   connection_retries=5,
                   retry_delay=3,
               )
-              await client.connect()
+
+              start_time = time.monotonic()
+              cycle = 0
+
               try:
+                  await asyncio.wait_for(client.connect(), timeout=45)
                   if not await client.is_user_authorized():
                       raise SessionExpiredError("Telegram session is expired or revoked.")
+
                   try:
-                      await client.send_message(group_id, "میو")
+                      entity = await client.get_input_entity(group_id)
                   except ValueError:
                       await client.get_dialogs()
-                      await client.send_message(group_id, "میو")
-                  print(f"[Cycle {cycle}/{TOTAL_CYCLES}] Meow sent successfully!")
+                      entity = await client.get_input_entity(group_id)
+
+                  while not stop_event.is_set():
+                      elapsed = time.monotonic() - start_time
+                      if elapsed >= MAX_RUNTIME_SEC:
+                          print(f"[{now_ir()}] Reached max runtime; exiting cleanly for next cron.")
+                          break
+
+                      cycle += 1
+                      try:
+                          if not client.is_connected():
+                              await asyncio.wait_for(client.connect(), timeout=45)
+                          await asyncio.wait_for(client.send_message(entity, "میو"), timeout=45)
+                          print(f"[{now_ir()}] [Cycle {cycle}] Meow sent successfully!")
+                      except (AuthKeyError, UnauthorizedError, SessionExpiredError) as e:
+                          print(f"[{now_ir()}] FATAL: {e} -> Generate a new SESSION_STRING.")
+                          sys.exit(1)
+                      except FloodWaitError as e:
+                          wait_sec = e.seconds + 5
+                          remaining = MAX_RUNTIME_SEC - (time.monotonic() - start_time)
+                          print(f"[{now_ir()}] FloodWait: {e.seconds}s (waiting {wait_sec}s)")
+                          if wait_sec >= remaining:
+                              print(f"[{now_ir()}] FloodWait exceeds remaining runtime; exiting cleanly.")
+                              break
+                          await sleep_or_stop(stop_event, wait_sec)
+                          continue
+                      except Exception as e:
+                          print(f"[{now_ir()}] Error on cycle {cycle}: {type(e).__name__} - {e}")
+                          try:
+                              if client.is_connected():
+                                  await client.disconnect()
+                          except Exception:
+                              pass
+                          remaining = MAX_RUNTIME_SEC - (time.monotonic() - start_time)
+                          await sleep_or_stop(stop_event, min(30, remaining))
+                          continue
+
+                      remaining = MAX_RUNTIME_SEC - (time.monotonic() - start_time)
+                      wait_time = random.uniform(INTERVAL_MIN, INTERVAL_MAX)
+                      if remaining <= 15:
+                          print(f"[{now_ir()}] Less than 15s left; exiting cleanly.")
+                          break
+                      await sleep_or_stop(stop_event, min(wait_time, remaining))
               finally:
-                  await client.disconnect()
-
-          async def main():
-              for cycle in range(1, TOTAL_CYCLES + 1):
                   try:
-                      await asyncio.wait_for(send_meow(cycle), timeout=65)
-                  except (AuthKeyError, UnauthorizedError, SessionExpiredError) as e:
-                      print(f"FATAL: {e} -> Generate a new SESSION_STRING.")
-                      sys.exit(1)
-                  except FloodWaitError as e:
-                      wait_sec = e.seconds + 5
-                      print(f"FloodWait: sleeping for {wait_sec}s")
-                      await asyncio.sleep(wait_sec)
-                      continue
-                  except Exception as e:
-                      print(f"Error on cycle {cycle}: {type(e).__name__} - {e}")
-
-                  if cycle < TOTAL_CYCLES:
-                      # Wait 4m 32s to 4m 35s AFTER sending (+ ~1s connect time = ~4m 33s-36s)
-                      await asyncio.sleep(272 + random.uniform(0, 3))
+                      if client.is_connected():
+                          await client.disconnect()
+                  except Exception:
+                      pass
+                  print(f"[{now_ir()}] Disconnected cleanly.")
 
           asyncio.run(main())
           EOF
