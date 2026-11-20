@@ -2,7 +2,7 @@ name: Meow Mafia Timer
 
 on:
   schedule:
-    - cron: '0 */5 * * *'
+    - cron: '17 */3 * * *'
   workflow_dispatch:
 
 concurrency:
@@ -14,7 +14,7 @@ permissions: {}
 jobs:
   send-meow:
     runs-on: ubuntu-latest
-    timeout-minutes: 310
+    timeout-minutes: 345
     steps:
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -32,10 +32,13 @@ jobs:
           GROUP_ID: ${{ secrets.GROUP_ID }}
         run: |
           cat << 'EOF' > bot.py
-          import os, asyncio, time
+          import os
+          import sys
+          import random
+          import asyncio
           from telethon import TelegramClient
           from telethon.sessions import StringSession
-          from telethon.errors import FloodWaitError
+          from telethon.errors import FloodWaitError, UnauthorizedError, AuthKeyError
 
           api_id_raw = os.environ.get("API_ID", "").strip()
           api_hash = os.environ.get("API_HASH", "").strip()
@@ -43,42 +46,54 @@ jobs:
           group_id_raw = os.environ.get("GROUP_ID", "").strip()
 
           if not all([api_id_raw, api_hash, session, group_id_raw]):
-              raise ValueError("ERROR: One or more GitHub Secrets (API_ID, API_HASH, SESSION_STRING, GROUP_ID) are missing in this repository!")
+              raise ValueError("ERROR: One or more GitHub Secrets (API_ID, API_HASH, SESSION_STRING, GROUP_ID) are missing!")
 
           api_id = int(api_id_raw)
           group_id = int(group_id_raw)
+          TOTAL_CYCLES = 68  # ~5 hours 15 minutes
 
-          async def execute_step(cycle):
+          class SessionExpiredError(Exception):
+              pass
+
+          async def send_meow(cycle: int):
               client = TelegramClient(
                   StringSession(session),
                   api_id,
                   api_hash,
                   connection_retries=5,
-                  retry_delay=3
+                  retry_delay=3,
               )
-              async with client:
+              await client.connect()
+              try:
+                  if not await client.is_user_authorized():
+                      raise SessionExpiredError("Telegram session is expired or revoked.")
                   try:
                       await client.send_message(group_id, "میو")
                   except ValueError:
                       await client.get_dialogs()
                       await client.send_message(group_id, "میو")
-                  print(f"[Cycle {cycle+1}/60] Meow sent successfully!")
+                  print(f"[Cycle {cycle}/{TOTAL_CYCLES}] Meow sent successfully!")
+              finally:
+                  await client.disconnect()
 
           async def main():
-              for cycle in range(60):
-                  start_time = time.time()
+              for cycle in range(1, TOTAL_CYCLES + 1):
                   try:
-                      await asyncio.wait_for(execute_step(cycle), timeout=65)
+                      await asyncio.wait_for(send_meow(cycle), timeout=65)
+                  except (AuthKeyError, UnauthorizedError, SessionExpiredError) as e:
+                      print(f"FATAL: {e} -> Generate a new SESSION_STRING.")
+                      sys.exit(1)
                   except FloodWaitError as e:
-                      print(f"Telegram FloodWait: sleeping for {e.seconds}s")
-                      await asyncio.sleep(e.seconds)
+                      wait_sec = e.seconds + 5
+                      print(f"FloodWait: sleeping for {wait_sec}s")
+                      await asyncio.sleep(wait_sec)
+                      continue
                   except Exception as e:
-                      print(f"Error on cycle {cycle+1}: {type(e).__name__} - {e}")
+                      print(f"Error on cycle {cycle}: {type(e).__name__} - {e}")
 
-                  elapsed = time.time() - start_time
-                  sleep_duration = max(0, 300 - elapsed)
-                  if cycle < 59:
-                      await asyncio.sleep(sleep_duration)
+                  if cycle < TOTAL_CYCLES:
+                      # Wait 4m 32s to 4m 35s AFTER sending (+ ~1s connect time = ~4m 33s-36s)
+                      await asyncio.sleep(272 + random.uniform(0, 3))
 
           asyncio.run(main())
           EOF
