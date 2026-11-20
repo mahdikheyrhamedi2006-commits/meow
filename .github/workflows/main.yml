@@ -24,7 +24,7 @@ jobs:
       - name: Install Telethon
         run: pip install --quiet telethon
 
-      - name: Run Meow & Claim Bot
+      - name: Run Meow Bot
         env:
           API_ID: ${{ secrets.API_ID }}
           API_HASH: ${{ secrets.API_HASH }}
@@ -48,34 +48,6 @@ jobs:
           api_id = int(api_id_raw)
           group_id = int(group_id_raw)
 
-          async def find_bot_reply(client, sent_msg_id, wait_seconds=6):
-              await asyncio.sleep(wait_seconds)
-              async for msg in client.iter_messages(group_id, limit=15):
-                  if msg.reply_to_msg_id == sent_msg_id:
-                      return msg
-              return None
-
-          async def claim_meow_points(client, cycle):
-              pishi_msg = await client.send_message(group_id, "پیشی")
-              print(f"[Cycle {cycle+1}/60] Sent پیشی to claim points...")
-
-              reply = await find_bot_reply(client, pishi_msg.id, wait_seconds=5)
-              if reply and reply.buttons:
-                  claimed = False
-                  for row in reply.buttons:
-                      for button in row:
-                          if "برداشت میو پوینت" in button.text:
-                              await button.click()
-                              print(f"[Cycle {cycle+1}/60] Clicked button: {button.text} (Points Claimed!)")
-                              claimed = True
-                              break
-                      if claimed:
-                          break
-                  if not claimed:
-                      print(f"[Cycle {cycle+1}/60] Claim button not found.")
-              else:
-                  print(f"[Cycle {cycle+1}/60] No reply or buttons for پیشی found.")
-
           async def execute_step(cycle):
               client = TelegramClient(
                   StringSession(session),
@@ -91,10 +63,6 @@ jobs:
                       await client.get_dialogs()
                       await client.send_message(group_id, "میو")
                   print(f"[Cycle {cycle+1}/60] Meow sent successfully!")
-
-                  if cycle == 0:
-                      await asyncio.sleep(3)
-                      await claim_meow_points(client, cycle)
 
           async def main():
               for cycle in range(60):
