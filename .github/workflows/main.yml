@@ -2,19 +2,19 @@ name: Meow Mafia Timer
 
 on:
   schedule:
-    - cron: '17 */3 * * *'
+    - cron: '23 */2 * * *'
   workflow_dispatch:
 
 concurrency:
   group: meow-mafia-runner
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 permissions: {}
 
 jobs:
   send-meow:
     runs-on: ubuntu-latest
-    timeout-minutes: 178
+    timeout-minutes: 345
     steps:
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -35,7 +35,6 @@ jobs:
           import os
           import sys
           import time
-          import random
           import signal
           import asyncio
           from datetime import datetime, timezone, timedelta
@@ -49,14 +48,13 @@ jobs:
           group_id_raw = os.environ.get("GROUP_ID", "").strip()
 
           if not all([api_id_raw, api_hash, session, group_id_raw]):
-              raise ValueError("ERROR: One or more GitHub Secrets (API_ID, API_HASH, SESSION_STRING, GROUP_ID) are missing!")
+              raise ValueError("Missing GitHub Secrets (API_ID, API_HASH, SESSION_STRING, GROUP_ID)")
 
           api_id = int(api_id_raw)
           group_id = int(group_id_raw)
 
-          MAX_RUNTIME_SEC = 172 * 60  # 2h 52m (clean handover before next 3h cron)
-          INTERVAL_MIN = 272          # 4m 32s
-          INTERVAL_MAX = 275          # 4m 35s
+          INTERVAL_SEC = 270          # 4:30 exact
+          MAX_RUNTIME_SEC = 330 * 60  # 5h 30m
           IR_TZ = timezone(timedelta(hours=3, minutes=30))
 
           def now_ir() -> str:
@@ -72,6 +70,23 @@ jobs:
                   await asyncio.wait_for(stop_event.wait(), timeout=seconds)
               except asyncio.TimeoutError:
                   pass
+
+          async def get_initial_wait(client: TelegramClient, entity) -> float:
+              try:
+                  msgs = await asyncio.wait_for(
+                      client.get_messages(entity, from_user="me", limit=10),
+                      timeout=30,
+                  )
+                  for msg in msgs:
+                      if msg and (msg.raw_text or "").strip() == "میو" and msg.date:
+                          msg_dt = msg.date if msg.date.tzinfo else msg.date.replace(tzinfo=timezone.utc)
+                          elapsed = (datetime.now(timezone.utc) - msg_dt).total_seconds()
+                          if 0 <= elapsed < INTERVAL_SEC:
+                              return (INTERVAL_SEC - elapsed) + 0.5
+                          break
+              except Exception as e:
+                  print(f"[{now_ir()}] Initial cooldown check skipped: {type(e).__name__} - {e}")
+              return 0.0
 
           async def main():
               stop_event = asyncio.Event()
@@ -104,18 +119,24 @@ jobs:
                       await client.get_dialogs()
                       entity = await client.get_input_entity(group_id)
 
+                  initial_wait = await get_initial_wait(client, entity)
+                  if initial_wait > 0:
+                      print(f"[{now_ir()}] Last meow was recent; waiting {initial_wait:.1f}s to match 4:30.")
+                      await sleep_or_stop(stop_event, initial_wait)
+
                   while not stop_event.is_set():
-                      elapsed = time.monotonic() - start_time
-                      if elapsed >= MAX_RUNTIME_SEC:
-                          print(f"[{now_ir()}] Reached max runtime; exiting cleanly for next cron.")
+                      if time.monotonic() - start_time >= MAX_RUNTIME_SEC:
+                          print(f"[{now_ir()}] Reached 5h30m limit; exiting cleanly.")
                           break
 
                       cycle += 1
+                      sent_at = None
                       try:
                           if not client.is_connected():
                               await asyncio.wait_for(client.connect(), timeout=45)
                           await asyncio.wait_for(client.send_message(entity, "میو"), timeout=45)
-                          print(f"[{now_ir()}] [Cycle {cycle}] Meow sent successfully!")
+                          sent_at = time.monotonic()
+                          print(f"[{now_ir()}] [Cycle {cycle}] Meow sent!")
                       except (AuthKeyError, UnauthorizedError, SessionExpiredError) as e:
                           print(f"[{now_ir()}] FATAL: {e} -> Generate a new SESSION_STRING.")
                           sys.exit(1)
@@ -124,7 +145,6 @@ jobs:
                           remaining = MAX_RUNTIME_SEC - (time.monotonic() - start_time)
                           print(f"[{now_ir()}] FloodWait: {e.seconds}s (waiting {wait_sec}s)")
                           if wait_sec >= remaining:
-                              print(f"[{now_ir()}] FloodWait exceeds remaining runtime; exiting cleanly.")
                               break
                           await sleep_or_stop(stop_event, wait_sec)
                           continue
@@ -136,14 +156,13 @@ jobs:
                           except Exception:
                               pass
                           remaining = MAX_RUNTIME_SEC - (time.monotonic() - start_time)
-                          await sleep_or_stop(stop_event, min(30, remaining))
+                          await sleep_or_stop(stop_event, min(20, remaining))
                           continue
 
                       remaining = MAX_RUNTIME_SEC - (time.monotonic() - start_time)
-                      wait_time = random.uniform(INTERVAL_MIN, INTERVAL_MAX)
-                      if remaining <= 15:
-                          print(f"[{now_ir()}] Less than 15s left; exiting cleanly.")
+                      if remaining <= 10:
                           break
+                      wait_time = max(1.0, INTERVAL_SEC - (time.monotonic() - sent_at))
                       await sleep_or_stop(stop_event, min(wait_time, remaining))
               finally:
                   try:
@@ -156,3 +175,4 @@ jobs:
           asyncio.run(main())
           EOF
           python -u bot.py
+          
